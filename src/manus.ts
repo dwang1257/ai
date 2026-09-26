@@ -11,6 +11,8 @@ export class ManusError extends Error {
   }
 }
 
+const baseUrl = "https://api.manus.ai";
+
 const errorSchema = z.object({
   ok: z.literal(false),
   error: z.object({ code: z.string(), message: z.string() })
@@ -81,11 +83,7 @@ export interface CreateTaskRequest {
 }
 
 export class ManusClient {
-  constructor(
-    private readonly apiKey: string,
-    private readonly baseUrl: string,
-    private readonly fetchFn: typeof fetch = fetch
-  ) {}
+  constructor(private readonly apiKey: string) {}
 
   async listConnectors(): Promise<Connector[]> {
     const body = await this.call("GET", "connector.list");
@@ -97,7 +95,7 @@ export class ManusClient {
       fileUploadSchema,
       await this.call("POST", "file.upload", { filename })
     );
-    const response = await this.fetchFn(upload_url, {
+    const response = await fetch(upload_url, {
       method: "PUT",
       body: content,
       headers: { "content-type": content.type }
@@ -165,7 +163,7 @@ export class ManusClient {
     path: string,
     body?: unknown
   ): Promise<unknown> {
-    const response = await this.fetchFn(new URL(`/v2/${path}`, this.baseUrl), {
+    const response = await fetch(new URL(`/v2/${path}`, baseUrl), {
       method,
       headers: {
         "x-manus-api-key": this.apiKey,

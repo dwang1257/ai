@@ -6,7 +6,7 @@ import { createServer } from "./server.js";
 
 const config = loadConfig();
 const publisher = new InstagramPublisher(
-  new ManusClient(config.apiKey, config.baseUrl),
+  new ManusClient(config.apiKey),
   config.instagramConnector
 );
 

@@ -90,11 +90,10 @@ Output: `taskId`, `taskUrl`, `state`, and optionally `postUrl` and `message`.
 
 ## Environment variables
 
-| Variable                    | Required | Default                | Description                                                  |
-| --------------------------- | -------- | ---------------------- | ------------------------------------------------------------ |
-| `MANUS_API_KEY`             | Yes      |                        | Manus API key.                                               |
-| `MANUS_BASE_URL`            | No       | `https://api.manus.ai` | Manus API base URL.                                          |
-| `MANUS_INSTAGRAM_CONNECTOR` | No       | `Instagram`            | Name (case-insensitive) or id of the Manus connector to use. |
+| Variable                    | Required | Default     | Description                                                  |
+| --------------------------- | -------- | ----------- | ------------------------------------------------------------ |
+| `MANUS_API_KEY`             | Yes      |             | Manus API key.                                               |
+| `MANUS_INSTAGRAM_CONNECTOR` | No       | `Instagram` | Name (case-insensitive) or id of the Manus connector to use. |
 
 The Instagram connector's id is not documented, so the server looks it up by name with Manus `connector.list`.
 Empty values are treated as unset.
@@ -129,4 +128,4 @@ Cloud routines cannot reach this local server.
 npm run check
 ```
 
-This runs the format check, lint, typecheck, and tests.
+This runs the format check, lint, and typecheck.

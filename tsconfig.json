@@ -15,7 +15,7 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "types": ["node", "vitest/globals"]
+    "types": ["node"]
   },
-  "include": ["src", "test", "eslint.config.js"]
+  "include": ["src", "eslint.config.js"]
 }
