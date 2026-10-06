@@ -1,0 +1,6 @@
+[mcp_servers.instagram]
+command = "node"
+args = [
+    "--env-file-if-exists=.env",
+    "dist/main.js",
+]

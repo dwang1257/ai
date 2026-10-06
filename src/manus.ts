@@ -73,14 +73,32 @@ export type Connector = z.infer<typeof connectorListSchema>["data"][number];
 export type Task = z.infer<typeof taskDetailSchema>["task"];
 export type TaskEvent = z.infer<typeof eventSchema>;
 
+export type StructuredOutput = Extract<
+  TaskEvent,
+  { type: "structured_output_result" }
+>["structured_output_result"];
+
+export interface TaskFile {
+  id: string;
+  filename: string;
+  mimeType: string;
+}
+
 export interface CreateTaskRequest {
   title: string;
   prompt: string;
-  fileId: string;
-  filename: string;
-  connectorId: string;
+  file?: TaskFile;
+  connectorIds?: string[];
   outputSchema: Record<string, unknown>;
 }
+
+export type TaskOutcome =
+  | { state: "running" }
+  | { state: "needs_attention"; message: string }
+  | { state: "failed"; message: string }
+  | { state: "finished"; output: StructuredOutput | undefined };
+
+export type TaskCheck = { taskId: string; taskUrl: string } & TaskOutcome;
 
 export class ManusClient {
   constructor(private readonly apiKey: string) {}
@@ -119,14 +137,20 @@ export class ManusClient {
       message: {
         content: [
           { type: "text", text: request.prompt },
-          {
-            type: "file",
-            file_id: request.fileId,
-            filename: request.filename,
-            mime_type: "video/mp4"
-          }
+          ...(request.file === undefined
+            ? []
+            : [
+                {
+                  type: "file",
+                  file_id: request.file.id,
+                  filename: request.file.filename,
+                  mime_type: request.file.mimeType
+                }
+              ])
         ],
-        connectors: [request.connectorId]
+        ...(request.connectorIds === undefined
+          ? {}
+          : { connectors: request.connectorIds })
       },
       structured_output_schema: request.outputSchema
     });
@@ -134,7 +158,7 @@ export class ManusClient {
     return { taskId: task.task_id, taskUrl: task.task_url };
   }
 
-  async getTask(taskId: string): Promise<Task> {
+  private async getTask(taskId: string): Promise<Task> {
     const body = await this.call(
       "GET",
       `task.detail?${new URLSearchParams({ task_id: taskId }).toString()}`
@@ -142,7 +166,19 @@ export class ManusClient {
     return this.parse(taskDetailSchema, body).task;
   }
 
-  async listRecentEvents(taskId: string): Promise<TaskEvent[]> {
+  async checkTask(taskId: string): Promise<TaskCheck> {
+    const [task, events] = await Promise.all([
+      this.getTask(taskId),
+      this.listRecentEvents(taskId)
+    ]);
+    return {
+      taskId: task.id,
+      taskUrl: task.task_url,
+      ...outcome(task, events)
+    };
+  }
+
+  private async listRecentEvents(taskId: string): Promise<TaskEvent[]> {
     const query = new URLSearchParams({
       task_id: taskId,
       order: "desc",
@@ -201,4 +237,53 @@ export class ManusClient {
     }
     return parsed.data;
   }
+}
+
+function outcome(task: Task, events: TaskEvent[]): TaskOutcome {
+  switch (task.status) {
+    case "running":
+      return { state: "running" };
+    case "waiting":
+      return {
+        state: "needs_attention",
+        message:
+          waitingDescription(events) ??
+          "Manus is waiting for input. Open the task to respond."
+      };
+    case "error":
+      return {
+        state: "failed",
+        message: latestError(events) ?? "The Manus task failed."
+      };
+    case "stopped":
+      if (task.has_running_background_jobs === true) {
+        return { state: "running" };
+      }
+      return { state: "finished", output: structuredOutput(events) };
+  }
+}
+
+function waitingDescription(events: TaskEvent[]): string | undefined {
+  for (const event of events) {
+    if (event.type === "status_update") {
+      return event.status_update.status_detail?.waiting_description;
+    }
+  }
+  return undefined;
+}
+
+function latestError(events: TaskEvent[]): string | undefined {
+  for (const event of events) {
+    if (event.type === "error_message") return event.error_message.content;
+  }
+  return undefined;
+}
+
+function structuredOutput(events: TaskEvent[]): StructuredOutput | undefined {
+  for (const event of events) {
+    if (event.type === "structured_output_result") {
+      return event.structured_output_result;
+    }
+  }
+  return undefined;
 }

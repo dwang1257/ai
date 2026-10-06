@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join } from "node:path";
 import { z } from "zod";
-import type { Connector, ManusClient, TaskEvent } from "./manus.js";
+import type { Connector, ManusClient, StructuredOutput } from "./manus.js";
 
 const maxVideoBytes = 512 * 1024 * 1024;
 
@@ -63,42 +63,20 @@ export class InstagramPublisher {
     return this.manus.createTask({
       title: `Instagram Reel: ${filename}`,
       prompt: publishPrompt(filename, caption),
-      fileId,
-      filename,
-      connectorId: connector.id,
+      file: { id: fileId, filename, mimeType: "video/mp4" },
+      connectorIds: [connector.id],
       outputSchema: publishOutputSchema
     });
   }
 
   async getPostStatus(taskId: string): Promise<PostStatus> {
-    const [task, events] = await Promise.all([
-      this.manus.getTask(taskId),
-      this.manus.listRecentEvents(taskId)
-    ]);
-    const base = { taskId: task.id, taskUrl: task.task_url };
-    switch (task.status) {
-      case "running":
-        return { ...base, state: "running" };
-      case "waiting":
-        return {
-          ...base,
-          state: "needs_attention",
-          message:
-            waitingDescription(events) ??
-            "Manus is waiting for input. Open the task to respond."
-        };
-      case "error":
-        return {
-          ...base,
-          state: "failed",
-          message: latestError(events) ?? "The Manus task failed."
-        };
-      case "stopped":
-        if (task.has_running_background_jobs === true) {
-          return { ...base, state: "running" };
-        }
-        return { ...base, ...interpretResult(events) };
-    }
+    const status = await this.manus.checkTask(taskId);
+    if (status.state !== "finished") return status;
+    return {
+      taskId: status.taskId,
+      taskUrl: status.taskUrl,
+      ...interpretResult(status.output)
+    };
   }
 
   private async findConnector(): Promise<Connector> {
@@ -160,34 +138,16 @@ function publishPrompt(filename: string, caption: string): string {
   ].join("\n\n");
 }
 
-function waitingDescription(events: TaskEvent[]): string | undefined {
-  for (const event of events) {
-    if (event.type === "status_update") {
-      return event.status_update.status_detail?.waiting_description;
-    }
-  }
-  return undefined;
-}
-
-function latestError(events: TaskEvent[]): string | undefined {
-  for (const event of events) {
-    if (event.type === "error_message") return event.error_message.content;
-  }
-  return undefined;
-}
-
 function interpretResult(
-  events: TaskEvent[]
+  result: StructuredOutput | undefined
 ): Pick<PostStatus, "state" | "postUrl" | "message"> {
-  const event = events.find((item) => item.type === "structured_output_result");
-  if (event === undefined) {
+  if (result === undefined) {
     return {
       state: "needs_attention",
       message:
         "Manus stopped without reporting a publish result. Check the task before posting again."
     };
   }
-  const result = event.structured_output_result;
   const value = publishResultSchema.safeParse(result.value);
   if (!result.success || !value.success) {
     return {
