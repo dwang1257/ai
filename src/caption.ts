@@ -32,7 +32,7 @@ export class CaptionWriter {
     const path = await validateVideo(videoPath);
     const frames = await this.extractFrames(path);
     const response = await this.client.beta.messages.create({
-      model: "claude-opus-5-5",
+      model: "claude-sonnet-5-5",
       max_tokens: 16000,
       output_config: { effort: "low" },
       betas: ["server-side-fallback-2026-07-01"],
