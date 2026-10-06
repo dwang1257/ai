@@ -17,6 +17,7 @@
     "ui": "node --env-file-if-exists=.env dist/ui.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
     "@modelcontextprotocol/server": "^2.1.0",
     "zod": "^4.6.5"
   },

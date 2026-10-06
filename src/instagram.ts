@@ -104,7 +104,7 @@ export class InstagramPublisher {
   }
 }
 
-async function validateVideo(videoPath: string): Promise<string> {
+export async function validateVideo(videoPath: string): Promise<string> {
   const path = videoPath.startsWith("~/")
     ? join(homedir(), videoPath.slice(2))
     : videoPath;

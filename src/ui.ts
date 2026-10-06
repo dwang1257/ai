@@ -1,6 +1,8 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
+import { CaptionWriter } from "./caption.js";
 import { loadConfig } from "./config.js";
 import { InstagramPublisher } from "./instagram.js";
 import { ManusClient } from "./manus.js";
@@ -10,6 +12,9 @@ const publisher = new InstagramPublisher(
   new ManusClient(config.apiKey),
   config.instagramConnector
 );
+const captionWriter =
+  config.anthropicApiKey &&
+  new CaptionWriter(new Anthropic({ apiKey: config.anthropicApiKey }));
 const host = "127.0.0.1";
 const allowedHosts = new Set([
   `${host}:${config.uiPort}`,
@@ -55,7 +60,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 <label for="videoPath">Video path</label>
 <input id="videoPath" name="videoPath" placeholder="/Users/you/videos/reel.mp4" required autocomplete="off" spellcheck="false">
 <label for="caption">Caption</label>
-<textarea id="caption" name="caption" maxlength="2200"></textarea>
+<textarea id="caption" name="caption" maxlength="2200" placeholder="Leave empty and Claude writes one from the video"></textarea>
 <button id="post" type="submit">Post to Instagram</button>
 </form>
 <p id="status" role="status" aria-live="polite"></p>
@@ -102,7 +107,8 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (button.disabled) return;
   button.disabled = true;
-  show([document.createTextNode("Uploading video and starting Manus task...")]);
+  const autoCaption = !form.caption.value.trim();
+  show([document.createTextNode(autoCaption ? "Writing caption, then uploading video..." : "Uploading video and starting Manus task...")]);
   let response;
   try {
     response = await fetch("/api/post", {
@@ -119,6 +125,10 @@ form.addEventListener("submit", async (event) => {
     show([document.createTextNode(body.error)], "error");
     button.disabled = false;
     return;
+  }
+  if (autoCaption) {
+    form.caption.value = body.caption;
+    form.caption.readOnly = true;
   }
   show([document.createTextNode("Publishing started."), link("Manus task", body.taskUrl)]);
   poll(body.taskId);
@@ -162,13 +172,22 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       });
       return;
     }
+    let caption = input.data.caption;
+    if (!caption.trim()) {
+      if (!captionWriter) {
+        send(res, 400, {
+          error:
+            "Enter a caption, or set ANTHROPIC_API_KEY in .env to write one automatically"
+        });
+        return;
+      }
+      console.error(`Writing caption for ${input.data.videoPath}`);
+      caption = await captionWriter.write(input.data.videoPath);
+    }
     console.error(`Posting ${input.data.videoPath}`);
-    const task = await publisher.postReel(
-      input.data.videoPath,
-      input.data.caption
-    );
+    const task = await publisher.postReel(input.data.videoPath, caption);
     console.error(`Started Manus task ${task.taskId}`);
-    send(res, 200, task);
+    send(res, 200, { ...task, caption });
     return;
   }
   if (req.method === "GET" && url.pathname === "/api/status") {

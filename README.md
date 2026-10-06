@@ -136,6 +136,7 @@ The swipe-file folder is `<RESEARCH_DIR>/<YYYY-MM-DD>-<platform>-<niche-slug>-<t
 | ---------------------------- | -------- | ------------------------ | --------------------------------------------------------------------------------- |
 | `MANUS_API_KEY`              | Yes      |                          | Manus API key.                                                                    |
 | `MANUS_INSTAGRAM_CONNECTOR`  | No       | `Instagram`              | Name (case-insensitive) or id of the Manus connector to use.                      |
+| `ANTHROPIC_API_KEY`          | No       |                          | Claude API key the web UI uses to write captions automatically.                   |
 | `RESEARCH_DIR`               | No       | `~/Movies/reel-research` | Absolute folder for research swipe files; `~/` is allowed.                        |
 | `YTDLP_PATH`                 | No       | `yt-dlp`                 | yt-dlp command or absolute path.                                                  |
 | `YTDLP_COOKIES_FROM_BROWSER` | No       |                          | Browser yt-dlp reads cookies from, for example `chrome`, to get past login walls. |
@@ -167,6 +168,9 @@ npm run ui
 ```
 
 Open http://127.0.0.1:3000 (or your `UI_PORT`), enter the absolute path to an `.mp4` and the caption, and click Post to Instagram.
+Leave the caption empty to have Claude write one: it samples frames with `ffmpeg`, writes the caption, and posts it right away without review.
+Generated captions are kept safe for work and always end with a question mark; captions you type are posted exactly as written.
+This needs `ANTHROPIC_API_KEY` in `.env` and `ffmpeg` on `PATH`.
 It uses the same publish logic as `post_reel` and polls the same status as `get_post_status` until the Reel is `published` or `failed`.
 The button stays disabled once a post starts, so reload the page to post another Reel.
 Every click publishes a new Reel and starts a new billed Manus task.

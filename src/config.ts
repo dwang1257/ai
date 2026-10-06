@@ -11,6 +11,7 @@ const expandHome = (path: string) =>
 const envSchema = z.object({
   MANUS_API_KEY: optional(z.string({ error: "MANUS_API_KEY is required" })),
   MANUS_INSTAGRAM_CONNECTOR: optional(z.string().default("Instagram")),
+  ANTHROPIC_API_KEY: optional(z.string().optional()),
   RESEARCH_DIR: optional(
     z
       .string()
@@ -36,6 +37,7 @@ const envSchema = z.object({
 export interface Config {
   apiKey: string;
   instagramConnector: string;
+  anthropicApiKey?: string;
   researchDir: string;
   ytdlpPath: string;
   ytdlpCookiesFromBrowser?: string;
@@ -55,6 +57,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     researchDir: parsed.data.RESEARCH_DIR,
     ytdlpPath: parsed.data.YTDLP_PATH,
     uiPort: parsed.data.UI_PORT,
+    ...(parsed.data.ANTHROPIC_API_KEY && {
+      anthropicApiKey: parsed.data.ANTHROPIC_API_KEY
+    }),
     ...(parsed.data.YTDLP_COOKIES_FROM_BROWSER && {
       ytdlpCookiesFromBrowser: parsed.data.YTDLP_COOKIES_FROM_BROWSER
     })

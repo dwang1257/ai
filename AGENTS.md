@@ -13,13 +13,14 @@ Stack: TypeScript on Node 22.9+, `@modelcontextprotocol/server`, zod, and the yt
 - `src/trends.ts` builds the Manus trend discovery prompt and maps Manus task state to a trend result.
 - `src/research.ts` orchestrates the swipe file: starts discovery, tracks downloads, and writes `request.json`, `README.md`, and `manifest.json` into the research folder.
 - `src/ytdlp.ts` downloads reference clips with yt-dlp.
+- `src/ui.ts` is a local web page for posting; with an empty caption it calls `src/caption.ts`, which samples frames with ffmpeg and has Claude write a caption that always ends with "?".
 - `src/manus.ts` is the Manus v2 HTTP client; `src/config.ts` parses env vars.
 - Manus API reference: https://open.manus.ai/docs/v2 (the Instagram connector's id is not documented, so it is resolved by name via `connector.list`).
 - Rules that must not break:
   - Never write to stdout, since it is the MCP channel; use stderr for diagnostics.
   - Never add automatic retries of `task.create` or `post_reel`; a retry can publish the same Reel twice.
   - `post_reel` must stay non-idempotent in its annotations and description, and must not report success before Manus confirms the Reel is live.
-  - Keep the caption passed through exactly; do not let the prompt invite Manus to edit it.
+  - Keep the caption passed through exactly; do not let the prompt invite Manus to edit it. Only generated captions are normalized to end with "?".
   - Never auto-retry `research_trends` either; each call is a new billed Manus task.
   - The discovery prompt must keep its safety filter: adult creators only and no explicit content.
   - Reference clips stay local for format research; never add code that edits or reposts them.
