@@ -169,7 +169,7 @@ npm run ui
 
 Open http://127.0.0.1:3000 (or your `UI_PORT`), enter the absolute path to an `.mp4` and the caption, and click Post to Instagram.
 Leave the caption empty to have Claude write one: it samples frames with `ffmpeg`, writes the caption, and posts it right away without review.
-Generated captions are kept safe for work and always end with a question mark; captions you type are posted exactly as written.
+Generated captions are a single safe-for-work question of 5 to 7 words with no hashtags; captions you type are posted exactly as written.
 This needs `ANTHROPIC_API_KEY` in `.env` and `ffmpeg` on `PATH`.
 It uses the same publish logic as `post_reel` and polls the same status as `get_post_status` until the Reel is `published` or `failed`.
 The button stays disabled once a post starts, so reload the page to post another Reel.

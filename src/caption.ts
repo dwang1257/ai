@@ -8,16 +8,15 @@ import { validateVideo } from "./instagram.js";
 
 const run = promisify(execFile);
 const frameCount = 6;
-const maxCaptionLength = 2200;
+const maxWords = 7;
 
 const instructions = [
   "You write Instagram Reel captions.",
   "The images are frames sampled in order from one Reel.",
-  "Write a caption of one to three short lines that hooks the viewer and matches what the Reel shows.",
+  "Write a single short question of 5 to 7 words that hooks the viewer and matches what the Reel shows.",
   "Keep it completely safe for work and suitable for a general audience: no sexual content or innuendo, no comments on bodies or appearance, no profanity, no violence, no drugs or alcohol, and nothing edgy or suggestive, even if the video leans that way.",
   "If the frames themselves look suggestive, describe only the neutral setting or activity.",
-  "You may add up to three relevant hashtags, but put them before the final line and keep them equally clean.",
-  "The final line must be a question to the viewer, so the last character of the caption is a question mark.",
+  "No hashtags, no line breaks, and the last character must be a question mark.",
   "Reply with only the caption text."
 ].join("\n");
 
@@ -65,10 +64,10 @@ export class CaptionWriter {
     if (!text) {
       throw new Error("Claude returned an empty caption");
     }
-    const caption = endWithQuestion(text);
-    if (caption.length > maxCaptionLength) {
+    const caption = endWithQuestion(text.replace(/\s+/g, " "));
+    if (caption.split(" ").length > maxWords) {
       throw new Error(
-        `Generated caption is longer than ${maxCaptionLength} characters`
+        `Claude wrote a caption longer than ${maxWords} words, so nothing was posted: "${caption}"`
       );
     }
     return caption;

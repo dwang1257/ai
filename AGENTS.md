@@ -13,7 +13,7 @@ Stack: TypeScript on Node 22.9+, `@modelcontextprotocol/server`, zod, and the yt
 - `src/trends.ts` builds the Manus trend discovery prompt and maps Manus task state to a trend result.
 - `src/research.ts` orchestrates the swipe file: starts discovery, tracks downloads, and writes `request.json`, `README.md`, and `manifest.json` into the research folder.
 - `src/ytdlp.ts` downloads reference clips with yt-dlp.
-- `src/ui.ts` is a local web page for posting; with an empty caption it calls `src/caption.ts`, which samples frames with ffmpeg and has Claude write a caption that always ends with "?".
+- `src/ui.ts` is a local web page for posting; with an empty caption it calls `src/caption.ts`, which samples frames with ffmpeg and has Claude write a 5 to 7 word caption that always ends with "?".
 - `src/manus.ts` is the Manus v2 HTTP client; `src/config.ts` parses env vars.
 - Manus API reference: https://open.manus.ai/docs/v2 (the Instagram connector's id is not documented, so it is resolved by name via `connector.list`).
 - Rules that must not break:
