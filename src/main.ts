@@ -1,6 +1,8 @@
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { Animator } from "./animate.js";
 import { loadConfig } from "./config.js";
 import { InstagramPublisher } from "./instagram.js";
+import { MaestroClient } from "./maestro.js";
 import { ManusClient } from "./manus.js";
 import { TrendResearcher } from "./research.js";
 import { createServer } from "./server.js";
@@ -17,4 +19,14 @@ const researcher = new TrendResearcher(new TrendScout(manus), {
   })
 });
 
-serveStdio(() => createServer(publisher, researcher));
+const animator = new Animator(
+  config.maestroUrl ? new MaestroClient(config.maestroUrl) : undefined,
+  {
+    outputDir: config.maestroOutputDir,
+    resolution: config.maestroResolution,
+    researchDir: config.researchDir,
+    ...(config.maestroWorkspace && { workspace: config.maestroWorkspace })
+  }
+);
+
+serveStdio(() => createServer(publisher, researcher, animator));

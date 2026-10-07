@@ -2,6 +2,7 @@
 
 Instagram Reels MCP server: a stdio MCP server that lets Claude post a local `.mp4` to Instagram as a Reel through a Manus task and the Manus Instagram connector.
 It also researches trending short-form formats through a Manus browser task and downloads the reference clips locally with yt-dlp into a swipe-file folder.
+It also drives Maestro (a local AI video studio run by Pinokio on a separate NVIDIA PC) over its HTTP API to run the Viggle Animate recipe.
 Stack: TypeScript on Node 22.9+, `@modelcontextprotocol/server`, zod, and the yt-dlp and ffmpeg binaries for research downloads.
 
 ## Orientation
@@ -13,6 +14,8 @@ Stack: TypeScript on Node 22.9+, `@modelcontextprotocol/server`, zod, and the yt
 - `src/trends.ts` builds the Manus trend discovery prompt and maps Manus task state to a trend result.
 - `src/research.ts` orchestrates the swipe file: starts discovery, tracks downloads, and writes `request.json`, `README.md`, and `manifest.json` into the research folder.
 - `src/ytdlp.ts` downloads reference clips with yt-dlp.
+- `src/maestro.ts` is the Maestro HTTP client and `src/animate.ts` validates inputs, uploads, submits the `viggle_animate` job, and downloads outputs; the tools are `animate_video`, `get_animation_status`, `cancel_animation`, and `list_maestro_characters`.
+- Maestro source: https://github.com/Blizaine/Maestro (backend `app/launch.py`, Viggle in `app/models/minimax_h3/viggle.py`, UI payload in `ui/src/stores/useStore.ts`); read it rather than guessing field names.
 - `src/ui.ts` is a local web page for posting; with an empty caption it calls `src/caption.ts`, which samples frames with ffmpeg and has Claude write a 5 to 7 word caption that always ends with "?".
 - `src/manus.ts` is the Manus v2 HTTP client; `src/config.ts` parses env vars.
 - Manus API reference: https://open.manus.ai/docs/v2 (the Instagram connector's id is not documented, so it is resolved by name via `connector.list`).
@@ -23,7 +26,8 @@ Stack: TypeScript on Node 22.9+, `@modelcontextprotocol/server`, zod, and the yt
   - Keep the caption passed through exactly; do not let the prompt invite Manus to edit it. Only generated captions are normalized to end with "?".
   - Never auto-retry `research_trends` either; each call is a new billed Manus task.
   - The discovery prompt must keep its safety filter: adult creators only and no explicit content.
-  - Reference clips stay local for format research; never add code that edits or reposts them.
+  - Reference clips stay local for format research; never add code that edits or reposts them, and keep `animate_video` refusing control videos inside `RESEARCH_DIR`.
+  - Never auto-retry Maestro `/api/v1/generate`; Maestro does not dedupe `_client_submission_id` for Viggle, so a retry queues a duplicate GPU job.
 - Use `rg` to find code.
 
 ## Commands
@@ -53,3 +57,4 @@ Run from the repo root with npm and Node 22.9+.
 - Manus deletes uploaded files 48 hours after upload and rejects files over 512 MB.
 - Research downloads need `yt-dlp` and `ffmpeg` on `PATH` (`brew install yt-dlp ffmpeg`); `YTDLP_PATH` overrides the yt-dlp binary.
 - Only call `research_trends` against live Manus when the user explicitly asks, since each task is billed.
+- Maestro has no auth and binds to loopback by default; it is reached over Tailscale Serve or with `PINOKIO_SHARE_LOCAL=true`. It needs an NVIDIA GPU, so it cannot run on a Mac.

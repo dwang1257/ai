@@ -1,5 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { audioModes, imageModels, resolutions } from "./animate.js";
+import type { AnimationStatus, Animator } from "./animate.js";
 import type { InstagramPublisher } from "./instagram.js";
 import type { ResearchStatus, TrendResearcher } from "./research.js";
 import { platforms } from "./trends.js";
@@ -45,9 +47,22 @@ const researchStatusSchema = z.object({
   videos: z.array(researchVideoSchema).optional()
 });
 
+const animationStatusSchema = z.object({
+  jobId: z.string(),
+  state: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
+  progress: z.number(),
+  phase: z.string().optional(),
+  message: z.string().optional(),
+  outputs: z.array(z.string()).optional(),
+  error: z.string().optional()
+});
+
+const seconds = z.number().min(0).max(3600);
+
 export function createServer(
   publisher: InstagramPublisher,
-  researcher: TrendResearcher
+  researcher: TrendResearcher,
+  animator: Animator
 ): McpServer {
   const server = new McpServer({ name: "instagram", version: "0.3.0" });
 
@@ -187,7 +202,191 @@ export function createServer(
     }
   );
 
+  server.registerTool(
+    "animate_video",
+    {
+      title: "Animate a character with Maestro",
+      description:
+        "Run Maestro's Viggle Animate recipe on the Maestro PC: the control video supplies the motion and the character replaces the person in it. Give exactly one of editedFramePath (a frame of the control video already edited to show the character), characterImagePath (a character image; Maestro prepares the replacement frame with Flux 2 Klein), or character (a saved Maestro character name or id, see list_maestro_characters). Uploads the files, queues one GPU job, and returns immediately; generation takes several minutes, so follow up with get_animation_status. Each call queues a new job, so do not retry blindly. Only use footage and likenesses you have the rights and consent to use; trend research clips are refused.",
+      inputSchema: z.object({
+        controlVideoPath: z
+          .string()
+          .min(1)
+          .describe(
+            "Absolute path to the control video whose motion drives the result, ~/ is allowed"
+          ),
+        editedFramePath: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Absolute path to an edited frame image of the control video showing the character"
+          ),
+        characterImagePath: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Absolute path to a character image"),
+        character: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Saved Maestro character name or id"),
+        audio: z
+          .enum(audioModes)
+          .default("none")
+          .describe(
+            "none (silent), control (keep the control video's soundtrack), or custom (use audioPath)"
+          ),
+        audioPath: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Absolute path to the soundtrack when audio is custom"),
+        resolution: z
+          .enum(resolutions)
+          .optional()
+          .describe("Output resolution, defaults to MAESTRO_RESOLUTION"),
+        seed: z
+          .number()
+          .int()
+          .min(-1)
+          .optional()
+          .describe("Seed, -1 or omitted for random"),
+        trimStart: seconds
+          .optional()
+          .describe("Start of the control video section to use, in seconds"),
+        trimEnd: seconds
+          .optional()
+          .describe("End of the control video section to use, in seconds"),
+        frameSeconds: seconds
+          .optional()
+          .describe(
+            "Time in the control video of the frame the character replaces, in seconds"
+          ),
+        imageModel: z
+          .enum(imageModels)
+          .optional()
+          .describe("Flux 2 Klein model that prepares the character frame")
+      }),
+      outputSchema: z.object({
+        jobId: z.string(),
+        queued: z.boolean(),
+        maestroUrl: z.string(),
+        controlVideoSeconds: z.number().optional()
+      }),
+      annotations: {
+        readOnlyHint: false,
+        idempotentHint: false,
+        openWorldHint: true
+      }
+    },
+    async (request) => {
+      const job = await animator.start(request);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Animation queued on Maestro (${job.maestroUrl}) as job ${job.jobId}. Check progress with get_animation_status.`
+          }
+        ],
+        structuredContent: job
+      };
+    }
+  );
+
+  server.registerTool(
+    "get_animation_status",
+    {
+      title: "Get Maestro animation status",
+      description:
+        "Check an animate_video job. state is queued (waiting for the GPU), running (with progress 0 to 100 and phase), completed (outputs lists the downloaded local video paths), failed (with error), or cancelled. The first call after completion downloads the result.",
+      inputSchema: z.object({
+        jobId: z.string().min(1).describe("jobId returned by animate_video")
+      }),
+      outputSchema: animationStatusSchema,
+      annotations: {
+        readOnlyHint: false,
+        idempotentHint: true,
+        openWorldHint: true
+      }
+    },
+    async ({ jobId }) => {
+      const status = await animator.getStatus(jobId);
+      return {
+        content: [{ type: "text", text: describeAnimation(status) }],
+        structuredContent: status
+      };
+    }
+  );
+
+  server.registerTool(
+    "cancel_animation",
+    {
+      title: "Cancel a Maestro animation",
+      description: "Cancel a queued or running animate_video job.",
+      inputSchema: z.object({
+        jobId: z.string().min(1).describe("jobId returned by animate_video")
+      }),
+      outputSchema: animationStatusSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true
+      }
+    },
+    async ({ jobId }) => {
+      const status = await animator.cancel(jobId);
+      return {
+        content: [{ type: "text", text: describeAnimation(status) }],
+        structuredContent: status
+      };
+    }
+  );
+
+  server.registerTool(
+    "list_maestro_characters",
+    {
+      title: "List saved Maestro characters",
+      description:
+        "List the characters saved in Maestro, for the character input of animate_video.",
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        characters: z.array(z.object({ id: z.string(), name: z.string() }))
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: true }
+    },
+    async () => {
+      const characters = await animator.listCharacters();
+      return {
+        content: [
+          {
+            type: "text",
+            text: characters.length
+              ? characters.map((c) => `${c.name} (${c.id})`).join("\n")
+              : "No saved characters in Maestro."
+          }
+        ],
+        structuredContent: { characters }
+      };
+    }
+  );
+
   return server;
+}
+
+function describeAnimation(status: AnimationStatus): string {
+  switch (status.state) {
+    case "completed":
+      return `Animation ${status.jobId} completed:\n${(status.outputs ?? []).join("\n")}`;
+    case "failed":
+      return `Animation ${status.jobId} failed: ${status.error ?? "unknown error"}`;
+    case "cancelled":
+      return `Animation ${status.jobId} was cancelled.`;
+    default:
+      return `Animation ${status.jobId} is ${status.state}, ${status.progress}%${status.phase ? ` (${status.phase})` : ""}${status.message ? `: ${status.message}` : ""}`;
+  }
 }
 
 function describeResearch(status: ResearchStatus): string {
