@@ -8,7 +8,7 @@ import { validateVideo } from "./instagram.js";
 
 const run = promisify(execFile);
 const frameCount = 6;
-const maxWords = 7;
+const maxWords = 15;
 
 const instructions = [
   "You write Instagram Reel captions.",
