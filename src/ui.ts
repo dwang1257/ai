@@ -1,12 +1,40 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream, rmSync } from "node:fs";
+import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { promisify } from "node:util";
 import { z } from "zod";
+import {
+  createAnimator,
+  imageExtensions,
+  maxUploadBytes,
+  videoExtensions
+} from "./animate.js";
+import type { AudioMode } from "./animate.js";
 import { CaptionWriter } from "./caption.js";
 import { loadConfig } from "./config.js";
 import { InstagramPublisher } from "./instagram.js";
+import { MaestroError } from "./maestro.js";
 import { ManusClient } from "./manus.js";
+import { page } from "./ui-page.js";
 
+class HttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
+
+const run = promisify(execFile);
 const config = loadConfig();
 const publisher = new InstagramPublisher(
   new ManusClient(config.apiKey),
@@ -15,11 +43,15 @@ const publisher = new InstagramPublisher(
 const captionWriter =
   config.anthropicApiKey &&
   new CaptionWriter(new Anthropic({ apiKey: config.anthropicApiKey }));
+const animator = createAnimator(config);
 const host = "127.0.0.1";
 const allowedHosts = new Set([
   `${host}:${config.uiPort}`,
   `localhost:${config.uiPort}`
 ]);
+const allowedOrigins = new Set(
+  [...allowedHosts].map((allowed) => `http://${allowed}`)
+);
 
 const postSchema = z.object({
   videoPath: z.string().min(1, { error: "Enter the path to an .mp4 file" }),
@@ -28,115 +60,47 @@ const postSchema = z.object({
     .max(2200, { error: "Caption must be 2200 characters or fewer" })
 });
 
-const page = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Post a Reel</title>
-<style>
-:root { color-scheme: light dark; --bg: #f6f6f4; --card: #ffffff; --text: #1a1a1a; --muted: #6b6b6b; --border: #dcdcd8; --accent: #1a1a1a; --accent-text: #ffffff; --error: #b42318; --ok: #067647; }
-@media (prefers-color-scheme: dark) { :root { --bg: #111111; --card: #1b1b1b; --text: #ececec; --muted: #9a9a9a; --border: #333333; --accent: #ececec; --accent-text: #111111; --error: #f97066; --ok: #47cd89; } }
-* { box-sizing: border-box; }
-body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, sans-serif; }
-main { width: 100%; max-width: 480px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
-h1 { margin: 0 0 20px; font-size: 20px; font-weight: 600; }
-label { display: block; margin-bottom: 6px; font-weight: 500; }
-input, textarea { width: 100%; margin-bottom: 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: inherit; font: inherit; }
-textarea { min-height: 120px; resize: vertical; }
-button { width: 100%; padding: 12px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600; cursor: pointer; }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
-#status { margin: 16px 0 0; color: var(--muted); overflow-wrap: anywhere; }
-#status:empty { display: none; }
-#status.error { color: var(--error); }
-#status.ok { color: var(--ok); }
-#status a { color: inherit; }
-</style>
-</head>
-<body>
-<main>
-<h1>Post a Reel to Instagram</h1>
-<form id="form">
-<label for="videoPath">Video path</label>
-<input id="videoPath" name="videoPath" placeholder="/Users/you/videos/reel.mp4" required autocomplete="off" spellcheck="false">
-<label for="caption">Caption</label>
-<textarea id="caption" name="caption" maxlength="2200" placeholder="Leave empty and Claude writes one from the video"></textarea>
-<button id="post" type="submit">Post to Instagram</button>
-</form>
-<p id="status" role="status" aria-live="polite"></p>
-</main>
-<script>
-const form = document.getElementById("form");
-const button = document.getElementById("post");
-const statusEl = document.getElementById("status");
-const labels = { running: "Publishing...", needs_attention: "Needs attention in Manus", published: "Posted to Instagram", failed: "Failed" };
-
-function link(text, href) {
-  if (!/^https?:\\/\\//.test(href)) return document.createTextNode(text);
-  const a = document.createElement("a");
-  a.href = href;
-  a.target = "_blank";
-  a.rel = "noopener noreferrer";
-  a.textContent = text;
-  return a;
-}
-
-function show(parts, tone) {
-  statusEl.className = tone || "";
-  statusEl.replaceChildren(...parts.flatMap((part, i) => (i ? [document.createTextNode(" "), part] : [part])));
-}
-
-async function poll(taskId) {
-  try {
-    const response = await fetch("/api/status?id=" + encodeURIComponent(taskId));
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error);
-    const parts = [document.createTextNode(labels[body.state] + ".")];
-    if (body.message) parts.push(document.createTextNode(body.message));
-    if (body.postUrl) parts.push(link("View Reel", body.postUrl));
-    parts.push(link("Manus task", body.taskUrl));
-    show(parts, body.state === "published" ? "ok" : body.state === "failed" ? "error" : "");
-    if (body.state === "published" || body.state === "failed") return;
-  } catch (error) {
-    show([document.createTextNode("Could not check status: " + error.message + ". Retrying...")], "error");
-  }
-  setTimeout(() => poll(taskId), 5000);
-}
-
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (button.disabled) return;
-  button.disabled = true;
-  const autoCaption = !form.caption.value.trim();
-  show([document.createTextNode(autoCaption ? "Writing caption, then uploading video..." : "Uploading video and starting Manus task...")]);
-  let response;
-  try {
-    response = await fetch("/api/post", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ videoPath: form.videoPath.value, caption: form.caption.value })
-    });
-  } catch {
-    show([document.createTextNode("Lost connection to the UI server. The post may have started; check Manus before posting again.")], "error");
-    return;
-  }
-  const body = await response.json().catch(() => ({ error: "Unreadable response from the UI server" }));
-  if (!response.ok) {
-    show([document.createTextNode(body.error)], "error");
-    button.disabled = false;
-    return;
-  }
-  if (autoCaption) {
-    form.caption.value = body.caption;
-    form.caption.readOnly = true;
-  }
-  show([document.createTextNode("Publishing started."), link("Manus task", body.taskUrl)]);
-  poll(body.taskId);
+const animateSchema = z.object({
+  controlVideoPath: z.string().min(1, { error: "Add a template video" }),
+  characterImagePath: z.string().min(1, { error: "Add a template image" }),
+  keepAudio: z.boolean({ error: "keepAudio must be true or false" })
 });
-</script>
-</body>
-</html>
-`;
+
+const uploadKinds = {
+  video: { label: "template video", extensions: videoExtensions },
+  image: { label: "template image", extensions: imageExtensions }
+};
+
+const mediaTypes: Partial<Record<string, string>> = {
+  ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp"
+};
+
+const silentNote =
+  "The template video has no audio track, so the result will be silent.";
+
+let uploadDir: Promise<string> | undefined;
+let submitting = false;
+
+function stagingDir(): Promise<string> {
+  uploadDir ??= mkdtemp(join(tmpdir(), "maestro-ui-"))
+    .then((dir) => realpath(dir))
+    .then((dir) => {
+      process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
+      return dir;
+    })
+    .catch((error: unknown) => {
+      uploadDir = undefined;
+      throw error;
+    });
+  return uploadDir;
+}
 
 function send(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "content-type": "application/json" });
@@ -149,64 +113,356 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
+function contentType(req: IncomingMessage): string | undefined {
+  return req.headers["content-type"]?.split(";")[0]?.trim().toLowerCase();
+}
+
+function requireId(url: URL): string {
+  const id = url.searchParams.get("id");
+  if (!id) throw new HttpError(400, "Missing id");
+  return id;
+}
+
+function isInside(dir: string, path: string): boolean {
+  const inside = relative(dir, path);
+  return inside !== "" && inside.split(sep)[0] !== ".." && !isAbsolute(inside);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function postReel(req: IncomingMessage, res: ServerResponse) {
+  if (req.headers["content-type"]?.split(";")[0] !== "application/json") {
+    send(res, 415, { error: "Expected application/json" });
+    return;
+  }
+  const input = postSchema.safeParse(await readJson(req).catch(() => null));
+  if (!input.success) {
+    send(res, 400, {
+      error: input.error.issues.map((issue) => issue.message).join("; ")
+    });
+    return;
+  }
+  let caption = input.data.caption;
+  if (!caption.trim()) {
+    if (!captionWriter) {
+      send(res, 400, {
+        error:
+          "Enter a caption, or set ANTHROPIC_API_KEY in .env to write one automatically"
+      });
+      return;
+    }
+    console.error(`Writing caption for ${input.data.videoPath}`);
+    caption = await captionWriter.write(input.data.videoPath);
+  }
+  console.error(`Posting ${input.data.videoPath}`);
+  const task = await publisher.postReel(input.data.videoPath, caption);
+  console.error(`Started Manus task ${task.taskId}`);
+  send(res, 200, { ...task, caption });
+}
+
+async function upload(req: IncomingMessage, res: ServerResponse, url: URL) {
+  if (contentType(req) !== "application/octet-stream") {
+    throw new HttpError(415, "Expected application/octet-stream");
+  }
+  const kind = url.searchParams.get("kind");
+  if (kind !== "video" && kind !== "image") {
+    throw new HttpError(400, 'kind must be "video" or "image"');
+  }
+  const { label, extensions } = uploadKinds[kind];
+  const name = basename(
+    (url.searchParams.get("name") ?? "").replace(/\\/g, "/")
+  );
+  const extension = extname(name).toLowerCase();
+  if (!extensions.includes(extension)) {
+    throw new HttpError(
+      400,
+      `The ${label} must be a ${extensions.join(", ")} file, got "${name}"`
+    );
+  }
+  const tooLarge = new HttpError(
+    413,
+    `"${name}" is larger than Maestro's 500 MB upload limit`
+  );
+  if (Number(req.headers["content-length"]) > maxUploadBytes) {
+    res.setHeader("connection", "close");
+    throw tooLarge;
+  }
+  const dir = join(await stagingDir(), randomUUID());
+  await mkdir(dir);
+  const stem =
+    basename(name, extname(name))
+      .replace(/[^\p{L}\p{N}_-]+/gu, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 100) || kind;
+  const path = join(dir, `${stem}${extension}`);
+  let size = 0;
+  try {
+    await pipeline(
+      req,
+      async function* (source: AsyncIterable<Buffer>) {
+        for await (const chunk of source) {
+          size += chunk.length;
+          if (size > maxUploadBytes) throw tooLarge;
+          yield chunk;
+        }
+      },
+      createWriteStream(path, { flags: "wx" })
+    );
+  } catch (error) {
+    await rm(dir, { recursive: true, force: true });
+    if (error === tooLarge) {
+      res.setHeader("connection", "close");
+    } else {
+      console.error(
+        `Upload of "${name}" did not finish (${errorMessage(error)}); removed the partial file`
+      );
+    }
+    throw error;
+  }
+  if (size === 0) {
+    await rm(dir, { recursive: true, force: true });
+    throw new HttpError(400, `"${name}" is empty`);
+  }
+  console.error(`Staged ${label} "${name}" (${size} bytes) at ${path}`);
+  send(res, 200, { path, name, size });
+}
+
+async function stagedFile(path: string, label: string): Promise<string> {
+  const dir = uploadDir === undefined ? undefined : await uploadDir;
+  const file = await realpath(path).catch(() => undefined);
+  if (dir === undefined || file === undefined || !isInside(dir, file)) {
+    throw new HttpError(
+      400,
+      `The ${label} must be a file added on this page since the UI server started. Add it again.`
+    );
+  }
+  return file;
+}
+
+async function hasAudioStream(path: string): Promise<boolean> {
+  const { stdout } = await run(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "a",
+      "-show_entries",
+      "stream=index",
+      "-of",
+      "csv=p=0",
+      path
+    ],
+    { timeout: 30_000 }
+  ).catch((error: unknown) => {
+    throw new Error(
+      `Could not check the template video for audio with ffprobe; install ffmpeg (brew install ffmpeg) or turn off keeping the original audio. ${errorMessage(error)}`
+    );
+  });
+  return stdout.trim() !== "";
+}
+
+async function animate(req: IncomingMessage, res: ServerResponse) {
+  if (contentType(req) !== "application/json") {
+    throw new HttpError(415, "Expected application/json");
+  }
+  const input = animateSchema.safeParse(await readJson(req).catch(() => null));
+  if (!input.success) {
+    throw new HttpError(
+      400,
+      input.error.issues.map((issue) => issue.message).join("; ")
+    );
+  }
+  const controlVideoPath = await stagedFile(
+    input.data.controlVideoPath,
+    "template video"
+  );
+  const characterImagePath = await stagedFile(
+    input.data.characterImagePath,
+    "template image"
+  );
+  if (submitting) {
+    throw new HttpError(
+      409,
+      "Another animation is still being sent to Maestro. Wait until it is queued before generating again."
+    );
+  }
+  submitting = true;
+  try {
+    const silent =
+      input.data.keepAudio && !(await hasAudioStream(controlVideoPath));
+    const audio: AudioMode =
+      input.data.keepAudio && !silent ? "control" : "none";
+    console.error(
+      `Animating ${controlVideoPath} with ${characterImagePath} (audio ${audio})`
+    );
+    const job = await animator.start({
+      controlVideoPath,
+      characterImagePath,
+      audio
+    });
+    console.error(`Queued Maestro job ${job.jobId}`);
+    send(res, 200, {
+      ...job,
+      audio,
+      ...(silent && { audioNote: silentNote })
+    });
+  } finally {
+    submitting = false;
+  }
+}
+
+function parseRange(
+  header: string | undefined,
+  size: number
+): { start: number; end: number } | "unsatisfiable" | undefined {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header?.trim() ?? "");
+  if (match === null) return undefined;
+  const [, first = "", last = ""] = match;
+  if (first === "" && last === "") return undefined;
+  if (first === "") {
+    const suffix = Number(last);
+    if (suffix === 0 || size === 0) return "unsatisfiable";
+    return { start: Math.max(0, size - suffix), end: size - 1 };
+  }
+  const start = Number(first);
+  const end = last === "" ? Infinity : Number(last);
+  if (end < start) return undefined;
+  if (start >= size) return "unsatisfiable";
+  return { start, end: Math.min(end, size - 1) };
+}
+
+function attachment(name: string): string {
+  const fallback = name.replace(/[^\x20-\x7e]|["\\]/g, "_");
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
+async function media(req: IncomingMessage, res: ServerResponse, url: URL) {
+  const notFound = new HttpError(404, "Not found");
+  const requested = url.searchParams.get("path");
+  if (!requested) throw notFound;
+  const [outputDir, file] = await Promise.all([
+    realpath(config.maestroOutputDir),
+    realpath(requested)
+  ]).catch(() => {
+    throw notFound;
+  });
+  if (!isInside(outputDir, file)) throw notFound;
+  const info = await stat(file);
+  if (!info.isFile()) throw notFound;
+  const headers: Record<string, string | number> = {
+    "content-type":
+      mediaTypes[extname(file).toLowerCase()] ?? "application/octet-stream",
+    "accept-ranges": "bytes",
+    "cache-control": "no-cache",
+    "last-modified": info.mtime.toUTCString(),
+    "x-content-type-options": "nosniff",
+    ...(url.searchParams.get("download") === "1" && {
+      "content-disposition": attachment(basename(file))
+    })
+  };
+  const range = parseRange(req.headers.range, info.size);
+  if (range === "unsatisfiable") {
+    res.writeHead(416, {
+      "content-type": "application/json",
+      "accept-ranges": "bytes",
+      "content-range": `bytes */${info.size}`
+    });
+    res.end(JSON.stringify({ error: "Requested range not satisfiable" }));
+    return;
+  }
+  const { start, end } = range ?? { start: 0, end: info.size - 1 };
+  res.writeHead(range === undefined ? 200 : 206, {
+    ...headers,
+    "content-length": end - start + 1,
+    ...(range !== undefined && {
+      "content-range": `bytes ${start}-${end}/${info.size}`
+    })
+  });
+  if (req.method === "HEAD" || end < start) {
+    res.end();
+    return;
+  }
+  await pipeline(createReadStream(file, { start, end }), res);
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse) {
   if (!allowedHosts.has(req.headers.host ?? "")) {
     send(res, 403, { error: "Forbidden host" });
     return;
   }
-  const url = new URL(req.url ?? "/", `http://${host}`);
-  if (req.method === "GET" && url.pathname === "/") {
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    res.end(page);
+  const origin = req.headers.origin;
+  if (
+    req.method !== "GET" &&
+    req.method !== "HEAD" &&
+    origin !== undefined &&
+    !allowedOrigins.has(origin)
+  ) {
+    send(res, 403, { error: "Forbidden origin" });
     return;
   }
-  if (req.method === "POST" && url.pathname === "/api/post") {
-    if (req.headers["content-type"]?.split(";")[0] !== "application/json") {
-      send(res, 415, { error: "Expected application/json" });
+  const url = new URL(req.url ?? "/", `http://${host}`);
+  switch (`${req.method ?? ""} ${url.pathname}`) {
+    case "GET /":
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(page);
       return;
-    }
-    const input = postSchema.safeParse(await readJson(req).catch(() => null));
-    if (!input.success) {
-      send(res, 400, {
-        error: input.error.issues.map((issue) => issue.message).join("; ")
+    case "POST /api/post":
+      await postReel(req, res);
+      return;
+    case "GET /api/status":
+      send(res, 200, await publisher.getPostStatus(requireId(url)));
+      return;
+    case "GET /api/animate/config":
+      send(res, 200, {
+        enabled: config.maestroUrl !== undefined,
+        ...(config.maestroUrl && { maestroUrl: config.maestroUrl })
       });
       return;
-    }
-    let caption = input.data.caption;
-    if (!caption.trim()) {
-      if (!captionWriter) {
-        send(res, 400, {
-          error:
-            "Enter a caption, or set ANTHROPIC_API_KEY in .env to write one automatically"
-        });
-        return;
-      }
-      console.error(`Writing caption for ${input.data.videoPath}`);
-      caption = await captionWriter.write(input.data.videoPath);
-    }
-    console.error(`Posting ${input.data.videoPath}`);
-    const task = await publisher.postReel(input.data.videoPath, caption);
-    console.error(`Started Manus task ${task.taskId}`);
-    send(res, 200, { ...task, caption });
-    return;
-  }
-  if (req.method === "GET" && url.pathname === "/api/status") {
-    const taskId = url.searchParams.get("id");
-    if (!taskId) {
-      send(res, 400, { error: "Missing id" });
+    case "POST /api/upload":
+      await upload(req, res, url);
       return;
-    }
-    send(res, 200, await publisher.getPostStatus(taskId));
-    return;
+    case "POST /api/animate":
+      await animate(req, res);
+      return;
+    case "GET /api/animate/status":
+      send(res, 200, await animator.getStatus(requireId(url)));
+      return;
+    case "POST /api/animate/cancel":
+      send(res, 200, await animator.cancel(requireId(url)));
+      return;
+    case "GET /api/media":
+    case "HEAD /api/media":
+      await media(req, res, url);
+      return;
   }
   send(res, 404, { error: "Not found" });
 }
 
+function errorStatus(error: unknown): number {
+  if (error instanceof HttpError) return error.status;
+  if (error instanceof MaestroError) return error.status === 404 ? 404 : 502;
+  return 500;
+}
+
+for (const [signal, code] of [
+  ["SIGINT", 130],
+  ["SIGTERM", 143]
+] as const) {
+  process.once(signal, () => process.exit(code));
+}
+
 createServer((req, res) => {
   handle(req, res).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    if (res.headersSent || res.destroyed) {
+      res.destroy();
+      return;
+    }
+    const message = errorMessage(error);
     console.error(message);
-    send(res, 500, { error: message });
+    send(res, errorStatus(error), { error: message });
   });
 }).listen(config.uiPort, host, () => {
   console.error(`Instagram Reel UI at http://${host}:${config.uiPort}`);

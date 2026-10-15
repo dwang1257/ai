@@ -4,7 +4,7 @@ import { audioModes, imageModels, resolutions } from "./animate.js";
 import type { AnimationStatus, Animator } from "./animate.js";
 import type { InstagramPublisher } from "./instagram.js";
 import type { ResearchStatus, TrendResearcher } from "./research.js";
-import { platforms } from "./trends.js";
+import { platforms, trendTarget } from "./trends.js";
 
 const postStatusSchema = z.object({
   taskId: z.string(),
@@ -54,7 +54,8 @@ const animationStatusSchema = z.object({
   phase: z.string().optional(),
   message: z.string().optional(),
   outputs: z.array(z.string()).optional(),
-  error: z.string().optional()
+  error: z.string().optional(),
+  etaSeconds: z.number().optional()
 });
 
 const seconds = z.number().min(0).max(3600);
@@ -122,7 +123,7 @@ export function createServer(
     {
       title: "Research trending Reel formats",
       description:
-        "Start a billed Manus task that finds the top public short-form videos for one platform and niche from the last few days, restricted to adult creators and non-explicit content, and writes a format breakdown per video (hook, structure, audio, on-screen text, caption style, hashtags, recipe) for shooting original content in that format. Returns immediately; follow up with get_research_status. The videos are saved locally as reference only and are never reposted. Each call starts a new billed task, so do not retry blindly.",
+        "Start a billed Manus task that finds the top public short-form videos for one platform and either one niche or one creator account from the last few days, restricted to adult creators and non-explicit content, and writes a format breakdown per video (hook, structure, audio, on-screen text, caption style, hashtags, recipe) for shooting original content in that format. Returns immediately; follow up with get_research_status. The videos are saved locally as reference only and are never reposted. Each call starts a new billed task, so do not retry blindly.",
       inputSchema: z.object({
         platform: z
           .enum(platforms)
@@ -134,8 +135,18 @@ export function createServer(
           .trim()
           .min(1)
           .max(100)
+          .optional()
           .describe(
-            'Niche to search, for example "gym", "beach", or "fashion"'
+            'Niche to search, for example "gym", "beach", or "fashion". Give this or creator, not both.'
+          ),
+        creator: z
+          .string()
+          .trim()
+          .min(1)
+          .max(31)
+          .optional()
+          .describe(
+            'Account handle whose own videos to research, for example "@name". Give this or niche, not both.'
           ),
         count: z
           .number()
@@ -150,7 +161,13 @@ export function createServer(
           .min(1)
           .max(30)
           .default(7)
-          .describe("Only consider videos posted within this many days")
+          .describe("Only consider videos posted within this many days"),
+        useMyBrowser: z
+          .boolean()
+          .default(true)
+          .describe(
+            "Have Manus browse through your own Chrome via the Manus Browser extension, where you are signed in to the platform with an adult account. Needed for age-restricted (18+) accounts that hide their posts from logged-out visitors. Fails before starting a task if no browser is online. Set false to use Manus's logged-out cloud browser instead."
+          )
       }),
       outputSchema: z.object({
         taskId: z.string(),
@@ -163,8 +180,14 @@ export function createServer(
         openWorldHint: true
       }
     },
-    async (request) => {
-      const task = await researcher.start(request);
+    async ({ platform, niche, creator, count, days, useMyBrowser }) => {
+      const task = await researcher.start({
+        platform,
+        target: trendTarget(niche, creator),
+        count,
+        days,
+        useMyBrowser
+      });
       return {
         content: [
           {
@@ -300,7 +323,7 @@ export function createServer(
     {
       title: "Get Maestro animation status",
       description:
-        "Check an animate_video job. state is queued (waiting for the GPU), running (with progress 0 to 100 and phase), completed (outputs lists the downloaded local video paths), failed (with error), or cancelled. The first call after completion downloads the result.",
+        "Check an animate_video job. state is queued (waiting for the GPU), running (with progress 0 to 100 and phase), completed (outputs lists the downloaded local video paths), failed (with error), or cancelled. While queued or running, etaSeconds estimates the seconds until Maestro finishes generating, when Maestro reports one. The first call after completion downloads the result.",
       inputSchema: z.object({
         jobId: z.string().min(1).describe("jobId returned by animate_video")
       }),

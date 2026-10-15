@@ -149,7 +149,7 @@ function interpretResult(
     };
   }
   const value = publishResultSchema.safeParse(result.value);
-  if (!result.success || !value.success) {
+  if (result.success === false || !value.success) {
     return {
       state: "failed",
       message: result.error ?? "Manus returned an unreadable publish result."

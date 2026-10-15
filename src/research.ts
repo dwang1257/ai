@@ -8,7 +8,7 @@ import {
 } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { z } from "zod";
-import { platformLabels, platforms } from "./trends.js";
+import { platformLabels, platforms, targetLabel } from "./trends.js";
 import type {
   Platform,
   TrendRequest,
@@ -25,9 +25,11 @@ const runRequestSchema = z.object({
   taskId: z.string(),
   taskUrl: z.string(),
   platform: z.enum(platforms),
-  niche: z.string(),
+  niche: z.string().exactOptional(),
+  creator: z.string().exactOptional(),
   count: z.number(),
   days: z.number(),
+  browser: z.object({ id: z.string(), name: z.string() }).exactOptional(),
   createdAt: z.string()
 });
 
@@ -97,13 +99,13 @@ export class TrendResearcher {
   async start(
     request: TrendRequest
   ): Promise<{ taskId: string; taskUrl: string; outputDir: string }> {
-    const niche = request.niche.trim();
-    if (niche === "") throw new Error("niche must not be empty");
-    const { taskId, taskUrl } = await this.scout.start({ ...request, niche });
+    const { target } = request;
+    const { taskId, taskUrl, browser } = await this.scout.start(request);
     const createdAt = new Date();
+    const name = target.kind === "niche" ? target.niche : target.handle;
     const outputDir = join(
       this.options.researchDir,
-      `${localDate(createdAt)}-${request.platform}-${slug(niche, 40) || "trends"}-${taskId}`
+      `${localDate(createdAt)}-${request.platform}-${slug(name, 40) || "trends"}-${taskId}`
     );
     try {
       if (!isSafeTaskId(taskId)) {
@@ -114,9 +116,12 @@ export class TrendResearcher {
         taskId,
         taskUrl,
         platform: request.platform,
-        niche,
+        ...(target.kind === "niche"
+          ? { niche: target.niche }
+          : { creator: target.handle }),
         count: request.count,
         days: request.days,
+        ...(browser && { browser }),
         createdAt: createdAt.toISOString()
       };
       await writeJsonAtomic(join(outputDir, requestFile), run);
@@ -159,7 +164,7 @@ export class TrendResearcher {
     if (this.downloads.has(taskId)) {
       return downloading(taskId, run.request.taskUrl, outputDir);
     }
-    const status = await this.scout.check(taskId);
+    const status = await this.scout.check(taskId, run.request.browser);
     const base = { taskId, taskUrl: status.taskUrl, outputDir };
     switch (status.state) {
       case "running":
@@ -267,7 +272,7 @@ function readme(request: RunRequest, videos: ResearchVideo[]): string {
   const from = new Date(created.getTime() - request.days * 86_400_000);
   const downloaded = videos.filter((video) => video.localPath !== undefined);
   const lines = [
-    `# ${platformLabels[request.platform]} / ${request.niche} trend research`,
+    `# ${platformLabels[request.platform]} / ${runLabel(request)} trend research`,
     "",
     `Window: last ${request.days} days (${localDate(from)} to ${localDate(created)}).`,
     `Manus task: ${request.taskUrl}`,
@@ -277,6 +282,13 @@ function readme(request: RunRequest, videos: ResearchVideo[]): string {
     lines.push("", ...videoSection(index, video));
   }
   return `${lines.join("\n")}\n`;
+}
+
+function runLabel(request: RunRequest): string {
+  if (request.creator !== undefined) {
+    return targetLabel({ kind: "creator", handle: request.creator });
+  }
+  return request.niche ?? "trends";
 }
 
 function videoSection(index: number, video: ResearchVideo): string[] {

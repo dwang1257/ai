@@ -9,14 +9,18 @@ import { validateVideo } from "./instagram.js";
 const run = promisify(execFile);
 const frameCount = 6;
 const maxWords = 15;
+const forbidden =
+  /\p{Extended_Pictographic}|\p{Regional_Indicator}|[\u2013\u2014:#]/u;
 
 const instructions = [
   "You write Instagram Reel captions.",
   "The images are frames sampled in order from one Reel.",
-  "Write a single short question of 5 to 7 words that hooks the viewer and matches what the Reel shows.",
-  "Keep it completely safe for work and suitable for a general audience: no sexual content or innuendo, no comments on bodies or appearance, no profanity, no violence, no drugs or alcohol, and nothing edgy or suggestive, even if the video leans that way.",
+  "Write one short, creative caption of 5 to 7 words that hooks the viewer and matches what the Reel shows.",
+  'Be inventive and play with wordplay, an unexpected angle, a playful observation, or a curious question, and avoid generic filler like "vibes" or "living my best life".',
+  "It can be a statement, an exclamation, or a question; do not default to a question.",
+  "Keep it completely safe for work and suitable for a general audience, with no sexual content or innuendo, no comments on bodies or appearance, no profanity, no violence, no drugs or alcohol, and nothing edgy or suggestive, even if the video leans that way.",
   "If the frames themselves look suggestive, describe only the neutral setting or activity.",
-  "No hashtags, no line breaks, and the last character must be a question mark.",
+  "Never use emojis, em dashes, en dashes, colons, hashtags, or line breaks.",
   "Reply with only the caption text."
 ].join("\n");
 
@@ -64,7 +68,12 @@ export class CaptionWriter {
     if (!text) {
       throw new Error("Claude returned an empty caption");
     }
-    const caption = endWithQuestion(text.replace(/\s+/g, " "));
+    const caption = text.replace(/\s+/g, " ");
+    if (forbidden.test(caption)) {
+      throw new Error(
+        `Claude wrote a caption with an emoji, dash, colon, or hashtag, so nothing was posted: "${caption}"`
+      );
+    }
     if (caption.split(" ").length > maxWords) {
       throw new Error(
         `Claude wrote a caption longer than ${maxWords} words, so nothing was posted: "${caption}"`
@@ -129,9 +138,4 @@ export class CaptionWriter {
       await rm(dir, { recursive: true, force: true });
     }
   }
-}
-
-export function endWithQuestion(caption: string): string {
-  const trimmed = caption.trim().replace(/[\s.!…]+$/u, "");
-  return trimmed.endsWith("?") ? trimmed : `${trimmed}?`;
 }

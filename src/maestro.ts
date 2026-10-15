@@ -42,6 +42,8 @@ export const jobStatuses = [
 
 const jobStatusSchema = z.enum(jobStatuses);
 
+const optionalNumber = z.number().nullish().catch(null);
+
 const systemConfigSchema = z.looseObject({
   app_version: z.string().nullish()
 });
@@ -79,7 +81,10 @@ const jobStatusResponseSchema = z.looseObject({
   phase: z.string().nullish(),
   message: z.string().nullish(),
   output_files: z.array(z.string()).nullish(),
-  error: z.string().nullish()
+  error: z.string().nullish(),
+  generation_completion_at: optionalNumber,
+  generation_eta_seconds: optionalNumber,
+  eta_updated_at: optionalNumber
 });
 
 const jobsSchema = z.looseObject({

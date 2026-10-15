@@ -1,5 +1,6 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, realpath, stat } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import {
   basename,
@@ -9,13 +10,9 @@ import {
   relative,
   resolve
 } from "node:path";
-import { MaestroError } from "./maestro.js";
-import type {
-  Character,
-  JobStatus,
-  JobStatusName,
-  MaestroClient
-} from "./maestro.js";
+import type { Config } from "./config.js";
+import { MaestroClient, MaestroError } from "./maestro.js";
+import type { Character, JobStatus, JobStatusName } from "./maestro.js";
 
 export const resolutions = [
   "auto_480p",
@@ -65,6 +62,7 @@ export interface AnimationStatus {
   message?: string;
   outputs?: string[];
   error?: string;
+  etaSeconds?: number;
 }
 
 export interface MaestroCharacter {
@@ -80,9 +78,16 @@ export interface AnimatorOptions {
 }
 
 const fps = 24;
-const maxUploadBytes = 500 * 1024 * 1024;
-const videoExtensions = [".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi"];
-const imageExtensions = [".png", ".jpg", ".jpeg", ".webp"];
+export const maxUploadBytes = 500 * 1024 * 1024;
+export const videoExtensions = [
+  ".mp4",
+  ".mov",
+  ".webm",
+  ".mkv",
+  ".m4v",
+  ".avi"
+];
+export const imageExtensions = [".png", ".jpg", ".jpeg", ".webp"];
 const audioExtensions = [".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"];
 const viggleModel = "viggle_animate";
 const swapPrompt =
@@ -123,8 +128,23 @@ interface Timeline {
   frames: number;
 }
 
+const researchClipRule =
+  "Reference clips from research are for format study only and must not be animated or reposted. Use your own footage as the control video.";
+
 const missingClientMessage =
   "MAESTRO_URL is not set. Set it to the Maestro address, for example https://maestro-pc.tailnet-name.ts.net from Secure Remote Access in Pinokio.";
+
+export function createAnimator(config: Config): Animator {
+  return new Animator(
+    config.maestroUrl ? new MaestroClient(config.maestroUrl) : undefined,
+    {
+      outputDir: config.maestroOutputDir,
+      resolution: config.maestroResolution,
+      researchDir: config.researchDir,
+      ...(config.maestroWorkspace && { workspace: config.maestroWorkspace })
+    }
+  );
+}
 
 export class Animator {
   constructor(
@@ -299,7 +319,13 @@ export class Animator {
     const inside = relative(researchDir, video);
     if (inside !== "" && !inside.startsWith("..") && !isAbsolute(inside)) {
       throw new Error(
-        `"${path}" is inside the trend research folder "${researchDir}". Reference clips from research are for format study only and must not be animated or reposted. Use your own footage as the control video.`
+        `"${path}" is inside the trend research folder "${researchDir}". ${researchClipRule}`
+      );
+    }
+    const copy = await findResearchCopy(video, researchDir);
+    if (copy !== undefined) {
+      throw new Error(
+        `"${path}" is a copy of "${copy}" from the trend research folder. ${researchClipRule}`
       );
     }
   }
@@ -342,6 +368,41 @@ export class Animator {
     }
     return outputs;
   }
+}
+
+async function findResearchCopy(
+  video: string,
+  researchDir: string
+): Promise<string | undefined> {
+  const size = (await stat(video)).size;
+  const entries = await readdir(researchDir, {
+    recursive: true,
+    withFileTypes: true
+  }).catch(() => []);
+  let digest: string | undefined;
+  for (const entry of entries) {
+    if (
+      !entry.isFile() ||
+      !videoExtensions.includes(extname(entry.name).toLowerCase())
+    ) {
+      continue;
+    }
+    const candidate = join(entry.parentPath, entry.name);
+    const info = await stat(candidate).catch(() => undefined);
+    if (info?.size !== size) continue;
+    digest ??= await sha256(video);
+    if ((await sha256(candidate).catch(() => undefined)) === digest) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+async function sha256(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path))
+    hash.update(chunk as Buffer);
+  return hash.digest("hex");
 }
 
 async function checkModels(
@@ -517,6 +578,8 @@ function describe(status: JobStatus): AnimationStatus {
   const phase = text(status.phase);
   const message = text(status.message);
   const detail = text(status.error);
+  const eta =
+    state === "queued" || state === "running" ? etaSeconds(status) : undefined;
   const error =
     state !== "failed"
       ? undefined
@@ -529,8 +592,27 @@ function describe(status: JobStatus): AnimationStatus {
     progress,
     ...(phase === undefined ? {} : { phase }),
     ...(message === undefined ? {} : { message }),
-    ...(error === undefined ? {} : { error })
+    ...(error === undefined ? {} : { error }),
+    ...(eta === undefined ? {} : { etaSeconds: eta })
   };
+}
+
+function etaSeconds(status: JobStatus): number | undefined {
+  const now = Date.now() / 1000;
+  const completion = finite(status.generation_completion_at);
+  if (completion !== undefined)
+    return Math.max(0, Math.round(completion - now));
+  const eta = finite(status.generation_eta_seconds);
+  if (eta === undefined) return undefined;
+  const updated = finite(status.eta_updated_at);
+  const age = updated === undefined ? 0 : Math.max(0, now - updated);
+  return Math.max(0, Math.round(eta - age));
+}
+
+function finite(value: number | null | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function animationState(status: JobStatusName): AnimationState {

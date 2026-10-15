@@ -22,6 +22,14 @@ const connectorListSchema = z.object({
   data: z.array(z.object({ id: z.string(), name: z.string() })).default([])
 });
 
+const browserListSchema = z.object({
+  data: z
+    .array(z.object({ client_id: z.string(), client_name: z.string() }))
+    .default([])
+});
+
+const confirmActionSchema = z.object({ confirmed: z.boolean() });
+
 const fileUploadSchema = z.object({
   file: z.object({ id: z.string() }),
   upload_url: z.url()
@@ -47,14 +55,18 @@ const eventSchema = z.discriminatedUnion("type", [
     status_update: z.object({
       agent_status: z.string(),
       status_detail: z
-        .object({ waiting_description: z.string().optional() })
+        .object({
+          waiting_for_event_id: z.string().optional(),
+          waiting_for_event_type: z.string().optional(),
+          waiting_description: z.string().optional()
+        })
         .optional()
     })
   }),
   z.object({
     type: z.literal("structured_output_result"),
     structured_output_result: z.object({
-      success: z.boolean(),
+      success: z.boolean().optional(),
       value: z.unknown(),
       error: z.string().nullable().optional()
     })
@@ -78,6 +90,16 @@ export type StructuredOutput = Extract<
   { type: "structured_output_result" }
 >["structured_output_result"];
 
+export interface BrowserClient {
+  id: string;
+  name: string;
+}
+
+export interface WaitingEvent {
+  id: string;
+  type: string;
+}
+
 export interface TaskFile {
   id: string;
   filename: string;
@@ -94,7 +116,7 @@ export interface CreateTaskRequest {
 
 export type TaskOutcome =
   | { state: "running" }
-  | { state: "needs_attention"; message: string }
+  | { state: "needs_attention"; message: string; waitingFor?: WaitingEvent }
   | { state: "failed"; message: string }
   | { state: "finished"; output: StructuredOutput | undefined };
 
@@ -106,6 +128,27 @@ export class ManusClient {
   async listConnectors(): Promise<Connector[]> {
     const body = await this.call("GET", "connector.list");
     return this.parse(connectorListSchema, body).data;
+  }
+
+  async listOnlineBrowsers(): Promise<BrowserClient[]> {
+    const body = await this.call("GET", "browser.onlineList");
+    return this.parse(browserListSchema, body).data.map((client) => ({
+      id: client.client_id,
+      name: client.client_name
+    }));
+  }
+
+  async selectBrowser(
+    taskId: string,
+    eventId: string,
+    clientId: string
+  ): Promise<boolean> {
+    const body = await this.call("POST", "task.confirmAction", {
+      task_id: taskId,
+      event_id: eventId,
+      input: { action: "select", client_id: clientId }
+    });
+    return this.parse(confirmActionSchema, body).confirmed;
   }
 
   async uploadFile(filename: string, content: Blob): Promise<string> {
@@ -244,12 +287,7 @@ function outcome(task: Task, events: TaskEvent[]): TaskOutcome {
     case "running":
       return { state: "running" };
     case "waiting":
-      return {
-        state: "needs_attention",
-        message:
-          waitingDescription(events) ??
-          "Manus is waiting for input. Open the task to respond."
-      };
+      return waiting(events);
     case "error":
       return {
         state: "failed",
@@ -263,13 +301,26 @@ function outcome(task: Task, events: TaskEvent[]): TaskOutcome {
   }
 }
 
-function waitingDescription(events: TaskEvent[]): string | undefined {
-  for (const event of events) {
-    if (event.type === "status_update") {
-      return event.status_update.status_detail?.waiting_description;
-    }
+function waiting(events: TaskEvent[]): TaskOutcome {
+  const detail = events.find((event) => event.type === "status_update")
+    ?.status_update.status_detail;
+  const message =
+    detail?.waiting_description ??
+    "Manus is waiting for input. Open the task to respond.";
+  if (
+    detail?.waiting_for_event_id === undefined ||
+    detail.waiting_for_event_type === undefined
+  ) {
+    return { state: "needs_attention", message };
   }
-  return undefined;
+  return {
+    state: "needs_attention",
+    message,
+    waitingFor: {
+      id: detail.waiting_for_event_id,
+      type: detail.waiting_for_event_type
+    }
+  };
 }
 
 function latestError(events: TaskEvent[]): string | undefined {

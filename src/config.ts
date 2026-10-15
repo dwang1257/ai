@@ -25,6 +25,7 @@ const absoluteDir = (name: string, fallback: string) =>
 const envSchema = z.object({
   MANUS_API_KEY: optional(z.string({ error: "MANUS_API_KEY is required" })),
   MANUS_INSTAGRAM_CONNECTOR: optional(z.string().default("Instagram")),
+  MANUS_BROWSER: optional(z.string().optional()),
   ANTHROPIC_API_KEY: optional(z.string().optional()),
   RESEARCH_DIR: absoluteDir("RESEARCH_DIR", "~/Movies/reel-research"),
   YTDLP_PATH: optional(z.string().default("yt-dlp")),
@@ -59,6 +60,7 @@ const envSchema = z.object({
 export interface Config {
   apiKey: string;
   instagramConnector: string;
+  manusBrowser?: string;
   anthropicApiKey?: string;
   researchDir: string;
   ytdlpPath: string;
@@ -85,6 +87,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     uiPort: parsed.data.UI_PORT,
     maestroOutputDir: parsed.data.MAESTRO_OUTPUT_DIR,
     maestroResolution: parsed.data.MAESTRO_RESOLUTION,
+    ...(parsed.data.MANUS_BROWSER && {
+      manusBrowser: parsed.data.MANUS_BROWSER
+    }),
     ...(parsed.data.ANTHROPIC_API_KEY && {
       anthropicApiKey: parsed.data.ANTHROPIC_API_KEY
     }),
